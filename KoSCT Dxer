@@ -1,0 +1,256 @@
+## Part 1. 작업 전에 필요한 사전 준비를 진행합니다.
+
+pip install konlpy ## 한국어 자연어 처리 패키지입니다.
+pip install customized_konlpy ## 어절 분리, 품사 분류 등을 해주는 일종의 사전입니다.
+import pandas as pd ## 데이터 처리용 라이브러리입니다.
+import numpy as np ## 수치해석용 파이썬 패키지입니다.
+import matplotlib.pyplot as plt ## 그래프를 그리기 위한 matplotlib 패키지입니다.
+import re ## 데이터 정규화 라이브러리입니다.
+import urllib.request ## 외부 github에 저장된 자료를 파이썬으로 가지고 옵니다.
+from konlpy.tag import Okt ## Open Korean Text 형태소 분석기입니다.
+from tensorflow.keras.preprocessing.text import Tokenizer ## 전처리 과정에서 사용하는 토큰화 모듈입니다.
+from tensorflow.keras.preprocessing.sequence import pad_sequences ## 모든 자료의 길이를 동일하게 정렬하는 패딩 과정을 수행합니다.
+import pickle ## 사전 훈련된 데이터를 가져오기 위해 필요한 모듈입니다.
+
+## 전처리 과정에서 사용할 훈련용 데이터를 가져옵니다.
+urllib.request.urlretrieve("https://raw.githubusercontent.com/e9t/nsmc/master/ratings_train.txt", filename="ratings_train.txt")
+train_data = pd.read_table('ratings_train.txt') 
+
+## 토큰화를 미리 진행해둔 훈련용 데이터를 가져옵니다.
+urllib.request.urlretrieve("https://raw.githubusercontent.com/lianist/KoSCT/main/X_train.pickle", filename="X_train.pickle")
+with open("X_train.pickle","rb") as fi:
+    X_train = pickle.load(fi)
+
+## 학습이 완료된 머신 러닝 모델을 가져옵니다.
+urllib.request.urlretrieve("https://raw.githubusercontent.com/lianist/KoSCT/main/trust_model.h5", filename="trust_model.h5")
+from keras.models import load_model
+loaded_model = load_model('trust_model.h5')
+
+## 각각의 변수와 모듈을 미리 설정해둡니다.
+max_len = 30
+tokenizer = Tokenizer()
+okt = Okt()
+stopwords = ['의','가','이','은','들','는','좀','잘','걍','과','도','를','으로','자','에','와','한','하다']
+
+
+
+## Part 2. 데이터 전처리를 수행합니다.
+tokenizer.fit_on_texts(X_train) ## 훈련 데이터를 바탕으로, 인덱스가 부여된 토큰 사전을 만듭니다.
+total_cnt = len(tokenizer.word_index) 
+rare_cnt, threshold, total_freq, rare_freq = 0, 3, 0, 0 ## 후처리 시 사용할 변수를 설정합니다.
+for key, value in tokenizer.word_counts.items(): ## 단어 - 빈도수의 짝을 설정한 뒤, 
+    total_freq = total_freq + value
+    if(value < threshold): ## 빈도가 지정된 3회보다 적으면, 
+        rare_cnt = rare_cnt + 1
+        rare_freq = rare_freq + value ## 이들을 '희귀 단어'로 정의합니다.
+vocab_size = total_cnt - rare_cnt + 1
+tokenizer = Tokenizer(vocab_size) ## 이 희귀 단어들을 제외한 만큼만을 처리할 범위로 간주합니다.
+tokenizer.fit_on_texts(X_train) 
+X_train = tokenizer.texts_to_sequences(X_train) ## 예시 문장들을 문자열에서 정수열로 변환합니다.
+y_train = np.array(train_data['label']) ## 각 X_train 데이터에 대한 사전 입력된 감성분석 정답을 y_train에 대응시켜 저장합니다.
+drop_train = [index for index, sentence in enumerate(X_train) if len(sentence) < 1]
+X_train = np.delete(X_train, drop_train, axis=0) 
+y_train = np.delete(y_train, drop_train, axis=0) ## 빈도수가 낮은 단어로만 구성되어 비어있는 문장을 삭제합니다.
+X_train = pad_sequences(X_train, maxlen=max_len) ## 모든 예시 문장의 토큰 수를 30개로 통일합니다.
+
+
+
+## Part 3. 프로그램을 실제로 동작시킵니다.
+## Part 3.1. 검사 안내부
+print('안녕하십니까. 한국형 문장완성검사 진단 알고리즘 KoSCT_Dxer v0.2.1을 이용해주셔서 감사합니다.')
+print('문장완성검사란, 응답자로 하여금 미완성 문장을 완성하도록 함으로써 특정 주제에 대한 응답자의 생각을 알아보는 투사적 심리검사의 일종입니다.')
+print('그럼 지금부터, 검사를 시작하겠습니다.')
+print('\n - - - - - - - - - - - - - - - - - - - - - ')
+print('\n제시되는 미완성 문장을, 가능한 한 빠르게 완성해주십시오.') ## 이용자에게 보일 메시지를 출력합니다.
+variable_ea = 9 ## 이 프로그램에서 검사할 문항의 숫자입니다. 확장성을 높이고자 일부러 변수로 두었습니다.
+threshold = 0.8 ## 몇 %이상의 긍정성부터 긍정 응답으로 평가할지, 그 기준선 값 입니다.
+## P.S. 실제 검증 결과, 0.8보다 0.82일 때가 더 높은 정확도를 보여주기는 합니다만, 개선 이전 내용에서 언급되는 코드이니 일단 0.8로 두었습니다.
+consa = (2/3)/((1-threshold)**2)
+consb = (2/3)/((0.5-threshold)**2) ## 신뢰도를 평가할 떄 사용되는 비례상수 값입니다.
+
+
+## Part 3.2. 응답 입력부
+for i in range(1, variable_ea + 1):  ## 지금부터 아래 전체 과정을, 문항의 총 개수(9) 만큼 반복합니다.
+    if i == 1:
+        answer_t = input("1. 나의 외모는, ")
+    elif i == 2:
+        answer_t = input("2. 나는, ")
+    elif i == 3:
+        answer_t = input("3. 주변 사람들은 나에 대해, ")
+    elif i == 4:
+        answer_t = input("4. 가족들은 나에 대해, ")
+    elif i == 5:
+        answer_t = input("5. 내가 만일, ")
+    elif i == 6:
+        answer_t = input("6. 나의 학창시절은, ")
+    elif i == 7:
+        answer_t = input("7. 어렸을 때 나는, ")
+    elif i == 8:
+        answer_t = input("8. 나의 미래는, ")
+    else:
+        answer_t = input("9. 나이가 더 들면, ") ## 각 문항 번호에 따라 발문이 달라집니다.
+    globals()['sentence_{}'.format(i)] = answer_t ## 각 문항에 대한 사용자의 응답 결과를, sentence_1, sentence_2, ...에 저장합니다. 
+    ## 전역변수 정의를 통하여, 가변수를 동적변수로 받아 처리했습니다.
+
+
+## Part 3.3. 응답 판정부
+    new_sentence = re.sub(r'[^ㄱ-ㅎㅏ-ㅣ가-힣 ]','', globals()['sentence_{}'.format(i)]) ## 각 응답을 정규식에 넣어 돌리고, 
+    new_sentence = okt.morphs(new_sentence, stem=True) ## Open Korean Text로 형태소 분석한 뒤,
+    new_sentence = [word for word in new_sentence if not word in stopwords] ## 불용어 목록에 있는 형태소들을 제거하고, 
+    encoded = tokenizer.texts_to_sequences([new_sentence]) ## 이 속의 문자열을 정수열로 변환한 뒤, 
+    pad_new = pad_sequences(encoded, maxlen = max_len) ## 30(max_len)에 따라 패딩을 진행해 길이를 균질화시키고, 
+    globals()['score_{}'.format(i)] = float(loaded_model.predict(pad_new)) ## 사전 학습된 모델에 대입하여 긍정도(score)를 계산하고, 
+    ## 이를 동적변수 처리하여 score_1, score_2, ...에 각각 저장,
+    score = float(loaded_model.predict(pad_new)) ## 가변수 score에도 동일한 값을 저장한다.
+
+
+## Part 3.4. 종속변수 계산부
+## A. 신뢰도(Accuracy) 계산
+    if score < 1 - threshold:
+        accuracy = 1-consa*(score**2) ## score가 0.2보다 낮으면 첫 번째 식에 따라 변수 계산
+    elif score <= threshold:
+        accuracy = 1-consb*((score-0.5)**2) ## score이 0.2~0.8 범위면 두 번째 식에 따라 변수 계산
+    else:
+        accuracy = 1-consa*((score-1)**2) ## score이 0.8보다 높으면 세 번째 식에 따라 변수 계산
+    globals()['acr_{}'.format(i)] = round(accuracy*85.71,2) ## 그 뒤에 기계학습 모델 내부 정확도(0.8571)을 독립사건으로 간주, 곱하고 반올림
+    ## 이 값을 acr_1, acr_2, ...로 저장하여 정확도로 간주함.
+    ## P.S. 최종발표자료 12페이지 맨 아래 그림 참고 부탁드립니다.
+## B. 강도(Intensity) 계산
+    if score < 0.5:
+        intensity = round(100-score*100, 2) ## score가 0.5보다 낮으면, 첫 번째 식에 따라 계산, 반올림
+    else:
+        intensity = round(score*100, 2) ## score가 0.5보다 높으면, 두 번째 식에 따라 계산, 반올림
+    globals()['its_{}'.format(i)] = intensity ## 이 값을 its_1, its_2, ...로 저장하여 강도로 간주함.
+    ## P.S. 지금 좀 더 좋은 계산식이 생각나긴 하는데, 이 부분은 모형 개선에서 제가 따로 설명하겠습니다.
+## C. 판정(Result) 계산
+    if score < 1 - threshold: 
+        result = 'C' ## score가 1 - 기준치(지금은 0.2)보다 낮으면, Conflict 유형으로 판단
+    elif score < threshold:
+        result = 'N' ## score가 1 - 기준치와 기준치 사이(0.2 ~ 0.8)에 있으면, Neutral 유형으로 판단
+    else:
+        result = 'P' ## score가 기준치(0.8)보다 높으면, Positive 유형으로 판단
+    globals()['res_{}'.format(i)] = result ## 이 결과를 문자열로 동적변수화하여 res_1, res_2, ...에 저장하고 판정 결과로 간주함.
+## D. 형태소(Morpheme) 분석
+    posres = okt.pos(answer_t) ## 가변수로 저장된 답을, 다시 형태소 분석합니다.
+    numpos = [] ## numpos라는 list를 만들고, 
+    for num in range(0, len(posres)): ## 각각의 모든 단어에 대해서, 
+        if posres[num][1] == 'Noun' or posres[num][1] == 'Verb' or posres[num][1] == 'Adjective': ## 품사 분류가 명사, 동사, 형용사일 때만
+            numpos.append(num) ## 그 단어의 번호들을 numpos 속에 추가합니다.
+    poslis = [] ## 그리고 다시 poslis라는 list를 만들어,
+    for num2 in numpos:
+        poslis.append(posres[num2][0]) ## 아까 저장된 번호에 해당되는 단어들만을 poslis에 저장한 뒤, 
+    globals()['poslis_{}'.format(i)] = poslis ## 이 목록을 poslis_1, poslis_2, ...로 동적변수화하여 저장합니다.
+## 이상의 과정 전체를 문항의 개수만큼 반복합니다. (즉, 여기까지 전부 for 반복문에 걸려 있습니다.)
+sumlen = 0 ## sumlen이라는 변수를 만들고, 
+for i in range(1, variable_ea + 1):
+    sumlen += len(globals()['sentence_{}'.format(i)])
+sumlen = round(sumlen/9, 2) ## 각 문항의 음절 수 평균을 소수점 둘째 자리에서 반올림 한 것을 sumlen으로 정의합니다.
+sumsco = 0 ## sumsco라는 변수를 만들고,
+for i in range(1, variable_ea + 1):
+    sumsco += globals()['score_{}'.format(i)]
+sumsco = round(sumsco*100/9, 2) ## 각 문항의 score(긍정응답도) 평균을 소수점 둘째 자리에서 반올림 한 것을 sumsco로 정의합니다.
+
+
+## Part 3.5. 결과 출력부
+print('모든 문항에 응답해주셨습니다. 이제, 검사 결과를 말씀드리겠습니다.')
+print('\n - - - - - - - - - - - - - - - - - - - - - ')
+print('\n먼저, KoSCT_Dxer의 응답 결과 판정입니다.') ## 이용자에게 보일 메시지를 출력합니다.
+
+
+## Part 3.6. 판정 출력부
+print('\n응답 유형이 긍정적(P)인 문항: ', end='')
+for i in range(1, variable_ea + 1):
+    if globals()['res_{}'.format(i)] == 'P':
+        print(str(i)+'번', end=' ') ## 응답 유형이 긍정적인 문항의 번호들을 골라내어 함께 출력합니다.
+print('\n응답 유형이 중립적(N)인 문항: ', end='')
+for i in range(1, variable_ea + 1):
+    if globals()['res_{}'.format(i)] == 'N':
+        print(str(i)+'번', end=' ') ## 응답 유형이 중립적인 문항의 번호들을 골라내어 함께 출력합니다.
+print('\n응답 유형이 갈등적(C)인 문항: ', end='')
+for i in range(1, variable_ea + 1):
+    if globals()['res_{}'.format(i)] == 'C':
+        print(str(i)+'번', end=' ') ## 응답 유형이 갈등적인 문항의 번호들을 골라내어 함께 출력합니다.
+
+
+## Part 3.7. 강도 및 신뢰도 출력부
+print('\n다음으로 각 문항별 KoSCT_Dxer의 판정 신뢰도(Accuracy)와 그 응답 강도(Intensity)입니다.')
+x_num = [] ## x_num이라는 list를 만들어, 
+for i in range(1, variable_ea + 1):
+    x_num.append(i) ## 1부터 문항 번호 수(9)까지의 숫자를 저장합니다.
+y_its = [] ## y_its라는 list를 만들어,
+for i in range(1, variable_ea + 1):
+    y_its.append(globals()['its_{}'.format(i)]) ## 각 문항 별 응답 강도(Intensity)값을 저장합니다.
+y_acr = [] ## y_acr이라는 list를 만들어,
+for i in range(1, variable_ea + 1):
+    y_acr.append(globals()['acr_{}'.format(i)]) ## 각 문항 별 판정 신뢰도(Accuracy)값을 저장합니다.
+plt.plot(x_num, y_its, marker = 'o', color = 'crimson') ## x축은 번호, y축은 강도를 나타내되, 이 그래프는 crimson 색으로 그리고,
+plt.plot(x_num, y_acr, marker = 'o', color = 'orange') ## x축은 번호, y축은 신뢰도를 나타내되, 이 그래프는 orange 색으로 그리며,
+plt.xlabel('Number of the Answer') ## x축 이름은 'Number of the Answer'로,
+plt.ylabel('Intensity & Accuracy (%)') ## y축 이름은 'Intensity & Accuracy (%)'로 저장합니다.
+plt.axis([1, 9, 30, 100]) ## x축은 1부터 9까지, y축은 30부터 100까지의 값만 보여주고, 
+plt.legend(['Intensity', 'Accuracy']) ## 두 그래프의 범례는 Intensity와 Accuracy로 이름짓고
+ax = plt.subplot()
+ax.set_xticks([1, 2, 3, 4, 5, 6, 7, 8, 9]) ## x축에는 1~9의 정수만 띄웁니다.
+plt.show() ## 이제, 그래프를 그립니다.
+
+
+## Part 3.8. 평균 길이 & 긍정도 출력부
+print('응답의 평균 길이는,', str(sumlen)+'음절 입니다.')
+print('응답의 평균 긍정도는,', str(sumsco)+'% 입니다.') ## 아까 계산한 sumlen과 sumsco를 각각 평균 길이와 긍정도로 출력합니다.
+
+
+## Part 3.9. 키워드 출력부
+print('\n모든 응답으로부터 각각의 핵심어를 추출하였습니다.')
+for i in range(1, variable_ea + 1):
+    print(str(i)+'번 응답의 키워드:', globals()['poslis_{}'.format(i)]) ## 각 문항에 대하여, i번 응답의 키워드: poslis_i의 형태로 키워드를 보여줍니다.
+
+
+## part 3.10. 유의응답 출력부
+print('\n이 중, 판정 신뢰도가 낮아(<50%) 해석에 유의가 필요한 문항과 그 응답은 다음과 같습니다.') ## 신뢰도를 사유로 전문을 제공하는 경우
+for i in range(1, variable_ea + 1): ## 각각의 문항에 대해서, 
+    if globals()['acr_{}'.format(i)] < 50: ## 만약 그 번호의 신뢰도가 50 미만이라면, 
+        if i == 1:
+            print('1. 나의 외모는,', sentence_1)
+        elif i == 2:
+            print('2. 나는,', sentence_2)
+        elif i == 3:
+            print('3. 주변 사람들은 나에 대해,', sentence_3)
+        elif i == 4:
+            print('4. 가족들은 나에 대해,', sentence_4)
+        elif i == 5:
+            print('5. 내가 만일,', sentence_5)
+        elif i == 6:
+            print('6. 나의 학창시절은,', sentence_6)
+        elif i == 7:
+            print('7. 어렸을 때 나는,', sentence_7)
+        elif i == 8:
+            print('8. 나의 미래는,', sentence_8)
+        else:
+            print('9. 나이가 더 들면,', sentence_9) ## 그 응답 전체를 보여줍니다.
+print('\n또한, 응답 유형이 갈등적(C)이어서 해석에 유의가 필요한 문항과 그 응답은 다음과 같습니다.') ## 판정 결과를 사유로 응답 결과를 제공하는 경우
+for i in range(1, variable_ea + 1): ## 각각의 문장에 대해서, 
+    if globals()['res_{}'.format(i)] == 'C': ## 만약 그 판정 결과가 갈등적(C)에 해당한다면,
+        if i == 1:
+            print('1. 나의 외모는,', sentence_1)
+        elif i == 2:
+            print('2. 나는,', sentence_2)
+        elif i == 3:
+            print('3. 주변 사람들은 나에 대해,', sentence_3)
+        elif i == 4:
+            print('4. 가족들은 나에 대해,', sentence_4)
+        elif i == 5:
+            print('5. 내가 만일,', sentence_5)
+        elif i == 6:
+            print('6. 나의 학창시절은,', sentence_6)
+        elif i == 7:
+            print('7. 어렸을 때 나는,', sentence_7)
+        elif i == 8:
+            print('8. 나의 미래는,', sentence_8)
+        else:
+            print('9. 나이가 더 들면,', sentence_9) ## 그 응답 전체를 보여줍니다.
+
+
+
+## Part 4. 가동 종료
+print('\n이상으로 한국형 문장완성검사 진단 알고리즘 KoSCT_Dxer의 가동을 마칩니다.')
+print('이용해주셔서 감사합니다.') ## 텍스트를 출력하고 프로그램 가동을 마칩니다.
